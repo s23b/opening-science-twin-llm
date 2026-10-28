@@ -5,12 +5,13 @@ import { z } from "zod";
 import {
   RSID_GENOTYPES_APP,
   type RsidGenotypeRow,
+  type GenomeReportSource,
 } from "@/packages/ark-adapter/rsid-genotypes";
 
 import { database } from "./database";
 
 /**
- * The released Ark report, stored locally so the dashboard and the genome
+ * The approved Ark data, stored locally so the dashboard and the genome
  * chat tools read it without asking the Ark (and the owner's phone) again.
  *
  * Two features read it (the Digital Twin dashboard writes and shows it; chat
@@ -21,6 +22,7 @@ import { database } from "./database";
 export type StoredGenomeReport = Readonly<{
   id: string;
   app: string;
+  source?: GenomeReportSource | null;
   arkBuild: string | null;
   rows: readonly RsidGenotypeRow[];
   releasedAt: string;
@@ -45,7 +47,14 @@ export const latestGenomeReport = async (
   const row = await database().genomeReport.findFirst({
     where: { app: RSID_GENOTYPES_APP, isSynthetic: false, user: { clerkId } },
     orderBy: { releasedAt: "desc" },
-    select: { id: true, app: true, arkBuild: true, rows: true, releasedAt: true },
+    select: {
+      id: true,
+      app: true,
+      source: true,
+      arkBuild: true,
+      rows: true,
+      releasedAt: true,
+    },
   });
   if (row === null) return null;
   const rows = rowsSchema.safeParse(row.rows);
@@ -56,6 +65,7 @@ export const latestGenomeReport = async (
   return {
     id: row.id,
     app: row.app,
+    source: row.source === "ark-export" || row.source === "ark-app" ? row.source : null,
     arkBuild: row.arkBuild,
     rows: rows.data,
     releasedAt: row.releasedAt.toISOString(),
@@ -64,6 +74,7 @@ export const latestGenomeReport = async (
 
 export type NewGenomeReport = Readonly<{
   userId: string;
+  source?: GenomeReportSource;
   arkBuild: string | null;
   rows: readonly RsidGenotypeRow[];
   report: string;
@@ -76,15 +87,17 @@ export const saveGenomeReport = async (
     data: {
       userId: input.userId,
       app: RSID_GENOTYPES_APP,
+      source: input.source ?? "ark-app",
       arkBuild: input.arkBuild,
       rows: input.rows.map((entry) => ({ ...entry })),
       report: input.report,
     },
-    select: { id: true, app: true, arkBuild: true, releasedAt: true },
+    select: { id: true, app: true, source: true, arkBuild: true, releasedAt: true },
   });
   return {
     id: row.id,
     app: row.app,
+    source: input.source ?? "ark-app",
     arkBuild: row.arkBuild,
     rows: input.rows,
     releasedAt: row.releasedAt.toISOString(),

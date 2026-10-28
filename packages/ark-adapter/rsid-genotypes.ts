@@ -23,8 +23,17 @@ export const RSID_GENOTYPES_VERSION = "0.2.0";
 /** Public grant the manifest requires, so an Ark without small variants refuses. */
 export const RSID_GENOTYPES_REQUIRED = "v1/genome/datasets/small-variants";
 
+/** How the owner sent the panel to this computer. */
+export type GenomeReportSource = "ark-export" | "ark-app";
+
 export type RsidPanelEntry = Readonly<{
   rsid: string;
+  /** Public GRCh38 chromosome used when a site carries no identifier. */
+  chrom: string;
+  /** Public GRCh38 position, counted from one. */
+  pos: number;
+  /** Public GRCh38 reference allele used when a site has no Variant. */
+  ref: string;
   gene: string;
   /** The star allele (or HGVS name) this site defines, from CPIC / PharmGKB tables. */
   allele: string;
@@ -35,33 +44,101 @@ export type RsidPanelEntry = Readonly<{
 const CYP_NOTE = "a liver cytochrome P450 enzyme that breaks down many medicines";
 
 export const RSID_PANEL: readonly RsidPanelEntry[] = [
-  { rsid: "rs4244285", gene: "CYP2C19", allele: "*2", geneNote: CYP_NOTE },
-  { rsid: "rs4986893", gene: "CYP2C19", allele: "*3", geneNote: CYP_NOTE },
-  { rsid: "rs12248560", gene: "CYP2C19", allele: "*17", geneNote: CYP_NOTE },
-  { rsid: "rs1799853", gene: "CYP2C9", allele: "*2", geneNote: CYP_NOTE },
-  { rsid: "rs1057910", gene: "CYP2C9", allele: "*3", geneNote: CYP_NOTE },
-  { rsid: "rs3892097", gene: "CYP2D6", allele: "*4", geneNote: CYP_NOTE },
-  { rsid: "rs1065852", gene: "CYP2D6", allele: "*10", geneNote: CYP_NOTE },
+  {
+    rsid: "rs4244285",
+    chrom: "chr10",
+    pos: 94781859,
+    ref: "G",
+    gene: "CYP2C19",
+    allele: "*2",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs4986893",
+    chrom: "chr10",
+    pos: 94780653,
+    ref: "G",
+    gene: "CYP2C19",
+    allele: "*3",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs12248560",
+    chrom: "chr10",
+    pos: 94761900,
+    ref: "C",
+    gene: "CYP2C19",
+    allele: "*17",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs1799853",
+    chrom: "chr10",
+    pos: 94942290,
+    ref: "C",
+    gene: "CYP2C9",
+    allele: "*2",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs1057910",
+    chrom: "chr10",
+    pos: 94981296,
+    ref: "A",
+    gene: "CYP2C9",
+    allele: "*3",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs3892097",
+    chrom: "chr22",
+    pos: 42128945,
+    ref: "C",
+    gene: "CYP2D6",
+    allele: "*4",
+    geneNote: CYP_NOTE,
+  },
+  {
+    rsid: "rs1065852",
+    chrom: "chr22",
+    pos: 42130692,
+    ref: "G",
+    gene: "CYP2D6",
+    allele: "*10",
+    geneNote: CYP_NOTE,
+  },
   {
     rsid: "rs4149056",
+    chrom: "chr12",
+    pos: 21178615,
+    ref: "T",
     gene: "SLCO1B1",
     allele: "*5",
     geneNote: "OATP1B1, a transporter that takes compounds up into liver cells",
   },
   {
     rsid: "rs3918290",
+    chrom: "chr1",
+    pos: 97450058,
+    ref: "C",
     gene: "DPYD",
     allele: "*2A",
     geneNote: "dihydropyrimidine dehydrogenase, which breaks down pyrimidines",
   },
   {
     rsid: "rs1142345",
+    chrom: "chr6",
+    pos: 18130687,
+    ref: "T",
     gene: "TPMT",
     allele: "*3C",
     geneNote: "thiopurine S-methyltransferase, which methylates thiopurine compounds",
   },
   {
     rsid: "rs9923231",
+    chrom: "chr16",
+    pos: 31096368,
+    ref: "C",
     gene: "VKORC1",
     allele: "c.-1639G>A",
     geneNote: "vitamin K epoxide reductase, part of the vitamin K cycle",
@@ -109,6 +186,9 @@ const GENOTYPE = new RegExp(
   String.raw`^[/|]?${GENOTYPE_ALLELE}(?:[/|]${GENOTYPE_ALLELE})*$`,
 );
 
+/** Accepts the genotype spelling shared by app reports and site exports. */
+export const isRsidGenotype = (value: string): boolean => GENOTYPE.test(value);
+
 type FieldResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false }>;
 
 const optional = <T>(
@@ -153,7 +233,7 @@ const parseRow = (
   const genotype =
     call === RSID_NO_CALL
       ? ({ ok: true, value: null } as const)
-      : GENOTYPE.test(call.toUpperCase())
+      : isRsidGenotype(call.toUpperCase())
         ? ({ ok: true, value: call.toUpperCase() } as const)
         : ({ ok: false } as const);
   if (!chromosome.ok) return `${rsid} has an unreadable chromosome`;

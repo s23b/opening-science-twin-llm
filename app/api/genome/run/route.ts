@@ -1,6 +1,12 @@
-import { postGenomeRunResponse } from "@/features/digital-twin/genome-run";
+import {
+  postGenomeRunResponse,
+  streamGenomeRunResponse,
+} from "@/features/digital-twin/genome-run";
 
-/** Blocks until the owner answers on their phone (about a minute); see docs/genome.md. */
-export const maxDuration = 300;
+/** Allows the export window or both fallback windows, plus machine waits. */
+export const maxDuration = 1800;
 
-export const POST = (): Promise<Response> => postGenomeRunResponse();
+export const POST = (request: Request): Response | Promise<Response> =>
+  request.headers.get("accept") === "application/x-ndjson"
+    ? streamGenomeRunResponse()
+    : postGenomeRunResponse();

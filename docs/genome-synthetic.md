@@ -90,6 +90,19 @@ from `parseRsidGenotypesReport`, the exact `report` text), with `isSynthetic` tr
 
 ## Determinism
 
+The compact FHIR export fixture uses the same seeded calls and catalog as the
+VCF and app report. Regenerate it without a device:
+
+```sh
+bun scripts/genome-synth/fhir.ts --out packages/ark-adapter/fixtures/export-synthetic.json
+```
+
+It contains deterministic UUID URLs and the public Genomics Reporting IG
+STU3 Genotype and Variant shapes used by `ark export --json`. Its subject is
+the synthetic UUID `080b069b-5108-46b6-ecef-6aacd3b9ef3f`. The parser tests
+compare it with that subject's generated app report. No live export is copied
+into the repository.
+
 Each site draws from its own seeded stream, keyed by the catalog version, the
 subject_ref and the rsID (FNV-1a into mulberry32, the generator the synthetic
 wearables use). The same subject and catalog version give the same genotypes, report

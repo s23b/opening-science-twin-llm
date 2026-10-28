@@ -13,6 +13,7 @@ import {
   arkDataListDocumentSchema,
   arkDataPathsDocumentSchema,
   arkDoctorDocumentSchema,
+  arkExportDocumentSchema,
   arkStatusDocumentSchema,
   formatZodIssues,
   isErrorDocument,
@@ -25,9 +26,15 @@ import {
   type ArkDataListDocument,
   type ArkDataPathsDocument,
   type ArkDoctorSafe,
+  type ArkExportDocument,
   type ArkStatusSafe,
 } from "./schemas";
-import { hostTimeoutMsForRun, spawnArk, type ArkSpawnResult } from "./spawn";
+import {
+  hostTimeoutMsForExport,
+  hostTimeoutMsForRun,
+  spawnArk,
+  type ArkSpawnResult,
+} from "./spawn";
 
 export type { ArkAuditContext };
 
@@ -40,6 +47,13 @@ export type ArkAppRunInput = {
 export type ArkAppRunData = {
   readonly report: string;
 };
+
+/** Required places or gates, optional places and the CLI's machine timeout. */
+export type ArkExportInput = Readonly<{
+  paths: readonly string[];
+  optional: readonly string[];
+  timeout?: number;
+}>;
 
 const parseStdout = (
   stdout: string,
@@ -89,7 +103,7 @@ const auditArgsFor = (
 const writeAudit = async (
   ctx: ArkAuditContext,
   tool: ArkAuditTool,
-  args: ArkAuditArgs,
+  args: unknown,
   result: unknown,
 ): Promise<void> => {
   try {
@@ -108,15 +122,21 @@ const runCommand = async <T>(
   options?: {
     readonly hostTimeoutMs?: number;
     readonly grants?: readonly string[];
+    /** Export audits carry counts instead of argv, paths or error text. */
+    readonly exportCounts?: { readonly paths_requested: number };
     /** doctor exits non-zero on a failed check but still prints its whole report. */
     readonly documentOnFailure?: boolean;
   },
 ): Promise<ArkResult<T>> => {
   const spawned = await spawnArk(commandArgv, options);
-  const args = auditArgsFor(spawned.argv, options?.grants);
+  const args = options?.exportCounts ?? auditArgsFor(spawned.argv, options?.grants);
+  const auditFailure = (error: unknown) =>
+    options?.exportCounts === undefined
+      ? error
+      : { paths_exported: 0, entry_count: 0, bundle_bytes: 0 };
   if (spawned.kind === "disabled") {
     const result = mapArkFailure(spawned.error);
-    await writeAudit(ctx, tool, args, result.error);
+    await writeAudit(ctx, tool, args, auditFailure(result.error));
     return result;
   }
 
@@ -150,12 +170,12 @@ const runCommand = async <T>(
         document.issues,
       ),
     );
-    await writeAudit(ctx, tool, args, result.error);
+    await writeAudit(ctx, tool, args, auditFailure(result.error));
     return result;
   }
 
   const result = failureFromSpawned(spawned);
-  await writeAudit(ctx, tool, args, result.error);
+  await writeAudit(ctx, tool, args, auditFailure(result.error));
   return result;
 };
 
@@ -257,4 +277,42 @@ export const appRun = (
     hostTimeoutMs: hostTimeoutMsForRun(input.timeout),
     grants: input.grants,
   });
+};
+
+/** Sends the selected places after one phone decision, auditing counts only. */
+export const exportFhir = async (
+  ctx: ArkAuditContext,
+  input: ArkExportInput,
+): Promise<ArkResult<ArkExportDocument>> => {
+  const commandArgv = [
+    "export",
+    ...input.paths,
+    ...input.optional.flatMap((path) => ["--optional", path]),
+    ...(input.timeout === undefined ? [] : ["--timeout", String(input.timeout)]),
+  ];
+  const result = await runCommand(
+    ctx,
+    "ark.export",
+    commandArgv,
+    (value) => {
+      const parsed = arkExportDocumentSchema.safeParse(value);
+      if (!parsed.success) return { ok: false, issues: ["invalid export document"] };
+      return {
+        ok: true,
+        data: parsed.data,
+        audit: {
+          paths_exported: parsed.data.paths.length,
+          entry_count: parsed.data.bundle.entry?.length ?? 0,
+          bundle_bytes: parsed.data.bundle_bytes,
+        },
+      };
+    },
+    {
+      hostTimeoutMs: hostTimeoutMsForExport(input.timeout),
+      exportCounts: { paths_requested: input.paths.length + input.optional.length },
+    },
+  );
+  return result.status !== "ok" && result.error.code === "unknown"
+    ? { ...result, status: "outdated" }
+    : result;
 };

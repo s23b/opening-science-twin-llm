@@ -6,9 +6,11 @@ export {
   dataList,
   dataPaths,
   doctor,
+  exportFhir,
   status,
   type ArkAppRunData,
   type ArkAppRunInput,
+  type ArkExportInput,
 } from "./client";
 export {
   errorFromExitCode,
@@ -32,6 +34,7 @@ export {
   type ArkDataListDocument,
   type ArkDataPathsDocument,
   type ArkDoctorSafe,
+  type ArkExportDocument,
   type ArkStatusSafe,
 } from "./schemas";
 export { buildArkArgv, hostTimeoutMsForCliTimeout } from "./spawn";

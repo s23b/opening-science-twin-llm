@@ -3,7 +3,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { GenomeReport } from "./genome-report";
-import { type GenomeReportView, isRunPayload, toReportView } from "./genome-report-view";
+import {
+  type GenomeReportView,
+  isRunPayload,
+  readGenomeRun,
+  runFailure,
+  toReportView,
+} from "./genome-report-view";
 
 const REPORT: GenomeReportView = toReportView(
   {
@@ -41,7 +47,7 @@ describe("GenomeReport", () => {
   });
 
   test("running: both phone steps with their windows, button disabled", () => {
-    const html = render({ kind: "running", report: null });
+    const html = render({ kind: "running", report: null, source: "ark-app" });
     expect(html).toContain("Approve on your phone.");
     expect(html).toContain("within 5 minutes");
     expect(html).toContain("Review and release the report on your phone.");
@@ -50,6 +56,15 @@ describe("GenomeReport", () => {
       html.indexOf("Review and release"),
     );
     expect(html).toContain('role="status"');
+    expect(html).toContain("disabled");
+  });
+
+  test("exporting shows one phone step and no later report review", () => {
+    const html = render({ kind: "running", report: null, source: "ark-export" });
+    expect(html).toContain("Approve the export on your phone.");
+    expect(html).toContain("within 5 minutes");
+    expect(html).toContain("No report review follows.");
+    expect(html).not.toContain("within 10 minutes");
     expect(html).toContain("disabled");
   });
 
@@ -110,5 +125,46 @@ describe("isRunPayload", () => {
     expect(isRunPayload({ ok: true, report: REPORT })).toBe(true);
     expect(isRunPayload({ ok: false, code: "busy", message: "m" })).toBe(true);
     expect(isRunPayload({ ok: false, error: "raw provider text" })).toBe(false);
+  });
+});
+
+describe("readGenomeRun", () => {
+  test("progress and the result can cross chunk boundaries", async () => {
+    const result = {
+      ok: true as const,
+      report: { ...REPORT, source: "ark-export" as const },
+    };
+    const text = `${JSON.stringify({ source: "ark-export" })}\n${JSON.stringify(result)}`;
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const byte of new TextEncoder().encode(text))
+          controller.enqueue(Uint8Array.of(byte));
+        controller.close();
+      },
+    });
+    const sources: string[] = [];
+    expect(
+      await readGenomeRun(
+        new Response(stream, { headers: { "Content-Type": "application/x-ndjson" } }),
+        (source) => sources.push(source),
+      ),
+    ).toEqual(result);
+    expect(sources).toEqual(["ark-export"]);
+  });
+
+  test("a truncated stream never reports success", async () => {
+    expect(
+      await readGenomeRun(
+        new Response('{"source":"ark-export"}\n', {
+          headers: { "Content-Type": "application/x-ndjson" },
+        }),
+        () => undefined,
+      ),
+    ).toEqual(runFailure("error"));
+  });
+
+  test("JSON clients still receive the existing result shape", async () => {
+    const result = runFailure("refused");
+    expect(await readGenomeRun(Response.json(result), () => undefined)).toEqual(result);
   });
 });

@@ -18,6 +18,7 @@ export const ARK_ADAPTER_BARREL_KEYS = [
   "doctor",
   "errorFromExitCode",
   "errorFromObject",
+  "exportFhir",
   "hostTimeoutMsForCliTimeout",
   "isArkOk",
   "mapArkFailure",

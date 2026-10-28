@@ -6,8 +6,8 @@ import { database } from "@/infrastructure/database";
 import { arkAuditOverride } from "./hooks";
 
 /**
- * Hashes argv and the parsed inventory/report (or error object) only.
- * row_count is always 0 — this adapter never returns dataset rows.
+ * Hashes inventory metadata and content-free app summaries. Export callers
+ * pass counts only, including on failure. row_count is always 0 here.
  */
 
 export type ArkAuditContext = {
@@ -17,7 +17,12 @@ export type ArkAuditContext = {
 };
 
 export type ArkAuditTool =
-  "ark.status" | "ark.doctor" | "ark.data.list" | "ark.data.paths" | "ark.app.run";
+  | "ark.status"
+  | "ark.doctor"
+  | "ark.data.list"
+  | "ark.data.paths"
+  | "ark.app.run"
+  | "ark.export";
 
 export const auditArkCall = async (
   ctx: ArkAuditContext,

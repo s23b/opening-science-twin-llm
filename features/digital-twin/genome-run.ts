@@ -19,18 +19,25 @@ import { append, type AppendInput } from "@/packages/audit/append";
 import {
   appRun,
   dataList,
+  exportFhir,
   isArkOk,
   type ArkAppRunData,
   type ArkAppRunInput,
   type ArkAuditContext,
   type ArkDataListDocument,
+  type ArkExportDocument,
+  type ArkExportInput,
   type ArkResult,
 } from "@/packages/ark-adapter";
 import {
   parseRsidGenotypesReport,
   RSID_GENOTYPES_APP,
   RSID_GENOTYPES_GRANTS,
+  RSID_GENOTYPES_REQUIRED,
+  type GenomeReportSource,
 } from "@/packages/ark-adapter/rsid-genotypes";
+import { parseRsidFhir } from "@/packages/ark-adapter/rsid-fhir";
+import { buildsAgree } from "@/packages/genome-reference/build";
 import { GENOME_RUN_AUDIT_TOOL } from "@/packages/carbon-x/constants";
 
 import {
@@ -43,10 +50,9 @@ import {
 /**
  * The genome dashboard's two routes.
  *
- * GET shows the stored report. POST runs rsid-genotypes on the Ark through
- * `packages/ark-adapter`: the CLI blocks until the owner approves on their
- * phone, then releases the report, which is parsed strictly and stored as a
- * personal record. Nothing here talks to a model. Every Ark call is audited
+ * GET shows the stored report. POST exports the panel after one phone decision,
+ * falling back to rsid-genotypes when exports are unavailable. The result is
+ * parsed strictly and stored as a personal record. Every Ark call is audited
  * by the adapter; the store is audited here with counts only, never a
  * genotype or a hash of one.
  */
@@ -65,6 +71,10 @@ export type GenomeRunPorts = Readonly<{
   wasmPath: () => string;
   wasmExists: (path: string) => Promise<boolean>;
   dataList: (ctx: ArkAuditContext) => Promise<ArkResult<ArkDataListDocument>>;
+  exportFhir: (
+    ctx: ArkAuditContext,
+    input: ArkExportInput,
+  ) => Promise<ArkResult<ArkExportDocument>>;
   appRun: (
     ctx: ArkAuditContext,
     input: ArkAppRunInput,
@@ -87,6 +97,7 @@ const defaultPorts = (): GenomeRunPorts => ({
       () => false,
     ),
   dataList,
+  exportFhir,
   appRun,
   ensureUserId: async (actor) => (await ensureAppUser(actor)).id,
   latest: latestGenomeReport,
@@ -132,51 +143,97 @@ export const getGenomeReportResponse = async (
   } satisfies GenomeReportPayload);
 };
 
-const failed = (code: string, status = 200): Response =>
-  Response.json(runFailure(code) satisfies GenomeRunPayload, { status });
+const failed = (
+  code: string,
+  status = 200,
+  source: GenomeReportSource = "ark-export",
+): Response =>
+  Response.json(runFailure(code, source) satisfies GenomeRunPayload, { status });
 
 export const postGenomeRunResponse = async (
   overrides: Partial<GenomeRunPorts> = {},
+  onSource: (source: GenomeReportSource) => void = () => undefined,
 ): Promise<Response> => {
   const ports = { ...defaultPorts(), ...overrides };
   const actor = await ports.resolveActorId();
   if (!actor) return failed("sign-in", 401);
   if (!ports.permit().ok) return failed("not-permitted", 403);
 
-  const wasm = ports.wasmPath();
-  if (!(await ports.wasmExists(wasm))) return failed("app-not-built", 409);
-
   const ctx: ArkAuditContext = { actor, sessionId: ports.sessionId() };
-  const listed = await ports.dataList(ctx);
-  if (!isArkOk(listed)) return failed(listed.status);
-
-  const run = await ports.appRun(ctx, {
-    app: wasm,
-    grants: RSID_GENOTYPES_GRANTS,
+  let source: GenomeReportSource = "ark-export";
+  onSource(source);
+  const exported = await ports.exportFhir(ctx, {
+    paths: [RSID_GENOTYPES_REQUIRED],
+    optional: RSID_GENOTYPES_GRANTS,
     timeout: RUN_TIMEOUT_S,
   });
-  if (!isArkOk(run)) return failed(run.status);
-
-  const parsed = parseRsidGenotypesReport(run.data.report);
+  if (!isArkOk(exported) && exported.status !== "outdated")
+    return failed(exported.status);
+  let report: string;
+  let arkBuild: string | null;
+  let parsed;
+  if (isArkOk(exported)) {
+    parsed = parseRsidFhir(exported.data.bundle, exported.data.paths);
+    report = JSON.stringify(exported.data.bundle);
+    arkBuild = parsed.ok ? parsed.arkBuild : null;
+    if (parsed.ok) {
+      const listed = await ports.dataList(ctx);
+      if (!isArkOk(listed)) return failed(listed.status);
+      const inventoryBuild = arkBuildOf(listed.data);
+      if (
+        arkBuild !== null &&
+        inventoryBuild !== null &&
+        !buildsAgree(arkBuild, inventoryBuild)
+      ) {
+        parsed = { ok: false as const, issue: "BUILD_MISMATCH" };
+      }
+    }
+  } else {
+    source = "ark-app";
+    onSource(source);
+    const wasm = ports.wasmPath();
+    if (!(await ports.wasmExists(wasm))) return failed("app-not-built", 409, source);
+    const listed = await ports.dataList(ctx);
+    if (!isArkOk(listed)) return failed(listed.status, 200, source);
+    const run = await ports.appRun(ctx, {
+      app: wasm,
+      grants: RSID_GENOTYPES_GRANTS,
+      timeout: RUN_TIMEOUT_S,
+    });
+    if (!isArkOk(run)) return failed(run.status, 200, source);
+    parsed = parseRsidGenotypesReport(run.data.report);
+    report = run.data.report;
+    arkBuild = arkBuildOf(listed.data);
+  }
   const auditBase = {
     actor,
     sessionId: ctx.sessionId,
     subjectRef: null,
     tool: GENOME_RUN_AUDIT_TOOL,
-    args: { app: RSID_GENOTYPES_APP, grants: RSID_GENOTYPES_GRANTS.length },
+    args: {
+      source,
+      ...(source === "ark-app" ? { app: RSID_GENOTYPES_APP } : {}),
+      grants: RSID_GENOTYPES_GRANTS.length,
+    },
   } as const;
   if (!parsed.ok) {
     console.error("[genome] released report did not parse:", parsed.issue);
     await ports.audit({ ...auditBase, result: { stored: false }, rowCount: 0 });
-    return failed("report-unreadable", 502);
+    return failed(
+      parsed.issue === "BUILD_MISMATCH" || parsed.issue === "BUILD_UNKNOWN"
+        ? parsed.issue
+        : "report-unreadable",
+      502,
+      source,
+    );
   }
 
-  const arkBuild = arkBuildOf(listed.data);
   const stored = await ports.save({
     userId: await ports.ensureUserId(actor),
     arkBuild,
+    source,
     rows: parsed.rows,
-    report: run.data.report,
+    report,
   });
   await ports.audit({
     ...auditBase,
@@ -193,4 +250,35 @@ export const postGenomeRunResponse = async (
     ok: true,
     report: toReportView(stored, ports.assumeBuild()),
   } satisfies GenomeRunPayload);
+};
+
+/** Streams only the chosen flow and the final result, without polling an approval. */
+export const streamGenomeRunResponse = (
+  overrides: Partial<GenomeRunPorts> = {},
+): Response => {
+  const encoder = new TextEncoder();
+  let closed = false;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (value: unknown) => {
+        if (!closed) controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
+      };
+      try {
+        const response = await postGenomeRunResponse(overrides, (source) =>
+          send({ source }),
+        );
+        send(await response.json());
+      } catch {
+        send(runFailure("error"));
+      } finally {
+        if (!closed) controller.close();
+      }
+    },
+    cancel() {
+      closed = true;
+    },
+  });
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
+  });
 };

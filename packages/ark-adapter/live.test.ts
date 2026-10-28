@@ -1,11 +1,9 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 
 import type { ArkResult } from "./codes";
-
-mock.module("server-only", () => ({}));
 
 const runLive = Reflect.get(process.env, "RUN_ARK") === "1";
 const configured = Reflect.get(process.env, "ARK_DEVICE");
@@ -39,6 +37,32 @@ const failUnlessOk = <T>(label: string, result: ArkResult<T>): T => {
 };
 
 describe.skipIf(!runLive)("ark-adapter live device (RUN_ARK=1)", () => {
+  test("exports the approved panel with one phone decision", async () => {
+    const { setArkAdapterTestHooks } = await import("./hooks");
+    setArkAdapterTestHooks({
+      env: { GENOME_SOURCE: "ark", ARK_DEVICE: device },
+      audit: async () => undefined,
+    });
+    const { exportFhir } = await import("./client");
+    const { parseRsidFhir } = await import("./rsid-fhir");
+    const { RSID_GENOTYPES_REQUIRED } = await import("./rsid-genotypes");
+    const data = failUnlessOk(
+      "exportFhir",
+      await exportFhir(
+        { actor: "live-test", sessionId: "ark-export-live", subjectRef: null },
+        {
+          paths: [RSID_GENOTYPES_REQUIRED],
+          optional: RSID_GENOTYPES_GRANTS,
+          timeout: 15,
+        },
+      ),
+    );
+    const parsed = parseRsidFhir(data.bundle, data.paths);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok)
+      expect(parsed.rows.map((row) => row.rsid)).toEqual([...RSID_GENOTYPES_PANEL]);
+  }, 420_000);
+
   test("status, four slots, and every path starts with v1/genome", async () => {
     const { setArkAdapterTestHooks } = await import("./hooks");
     setArkAdapterTestHooks({
@@ -115,7 +139,7 @@ describe.skipIf(!runLive)("ark-adapter live device (RUN_ARK=1)", () => {
     expect(hasTitle).toBe(true);
     expect(hasFooter).toBe(true);
     expect(hasElevenRows).toBe(true);
-  });
+  }, 1_230_000);
 });
 
 afterAll(async () => {

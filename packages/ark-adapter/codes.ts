@@ -128,6 +128,20 @@ export const mapArkFailure = (error: ArkError): ArkFailure => {
     case "firmware-outdated":
       return { status: "outdated", error };
     case "ark":
+    case "export-limit":
+    case "export-path-unknown":
+    case "export-path-not-exportable":
+    case "export-request-invalid":
+    case "export-required-unavailable":
+    case "export-grant-check-failed":
+    case "export-record-too-large":
+    case "export-busy":
+    case "export-data-failed":
+    case "export-journal-failed":
+    case "export-canceled":
+    case "export-task-unknown":
+    case "export-task-state":
+    case "export-output-range":
       return { status: "rejected", error };
     case "app-failed":
       return { status: "app_failed", error };

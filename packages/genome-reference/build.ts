@@ -20,6 +20,18 @@ export const normaliseBuild = (raw: string | null | undefined): KnownBuild | nul
   return null;
 };
 
+/** Compares assembly families and checks patch versions when both name one. */
+export const buildsAgree = (left: string, right: string): boolean => {
+  const family = normaliseBuild(left);
+  if (family === null || family !== normaliseBuild(right)) return false;
+  const patch = (value: string) => value.trim().match(/\.p(\d+)$/i)?.[1];
+  return (
+    patch(left) === undefined ||
+    patch(right) === undefined ||
+    patch(left) === patch(right)
+  );
+};
+
 export type BuildDecision =
   | Readonly<{ ok: true; build: typeof REFERENCE_BUILD; source: "ark" | "assumed" }>
   | Readonly<{ ok: false; code: "BUILD_MISMATCH" | "BUILD_UNKNOWN"; error: string }>;

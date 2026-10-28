@@ -40,6 +40,7 @@ const ALLOWED_PREFIXES: ReadonlyArray<readonly string[]> = [
   ["data", "list"],
   ["data", "paths"],
   ["run"],
+  ["export"],
 ];
 
 export const isAllowedArkCommand = (commandArgv: readonly string[]): boolean =>
@@ -195,3 +196,9 @@ export const hostTimeoutMsForRun = (timeoutSeconds?: number): number =>
   RUN_APPROVAL_WINDOW_MS +
   REPORT_REVIEW_WINDOW_MS +
   RUN_HOST_MARGIN_MS;
+
+/** Covers the export's single 5-minute approval window and machine-wait slack. */
+export const hostTimeoutMsForExport = (timeoutSeconds?: number): number =>
+  (timeoutSeconds ?? CLI_DEFAULT_TIMEOUT_S) * 1000 +
+  RUN_APPROVAL_WINDOW_MS +
+  APPROVAL_HOST_SLACK_MS;

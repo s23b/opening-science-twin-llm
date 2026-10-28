@@ -11,17 +11,23 @@ export const SOURCES_TITLE = "Sources";
 export const SOURCES_NOTE = "Where this twin's data comes from.";
 export const GENOME_TWIN = "Genome twin";
 export const GENOME_NOTE =
-  "Your released Ark report, the slot inventory and recent reads. The helix is decorative.";
+  "Your approved Ark data, the slot inventory and recent reads. The helix is decorative.";
 export const GENOME_EMPTY = "No genome twin on this account.";
 
-/** The rsid-genotypes run and its released report. */
+/** The panel export and its app fallback. */
 export const GENOME_REPORT_COPY = {
   title: "rsID genotypes",
-  note: "Runs the rsid-genotypes app on your Ark. It reads up to eleven public CPIC / PharmGKB sites, each one you switch on, and releases only their recorded genotypes after you review the report on your phone. The report stays on this machine.",
+  note: "Exports up to eleven public CPIC / PharmGKB sites from your Ark, each one you switch on. You approve sending this data to this computer as FHIR, with no review afterward. The result stays on this machine. An older Ark uses the rsid-genotypes app with a report review.",
   run: "Run on Ark",
   runAgain: "Run again",
   empty: "No report released yet.",
   approveTitle: "Waiting for your phone",
+  exportSteps: [
+    {
+      title: "Approve the export on your phone",
+      body: "Approve in Ark Companion within 5 minutes and switch on the sites you want to send. No report review follows.",
+    },
+  ],
   steps: [
     {
       title: "Approve on your phone",
@@ -37,6 +43,8 @@ export const GENOME_REPORT_COPY = {
   notGranted: "not granted",
   notGrantedNote:
     "Not granted: the site was switched off at approval or is not on the Ark. The app cannot tell which.",
+  exportNotGrantedNote:
+    "Not granted means the site was not included in the approved export.",
   tableCaption: "Recorded genotypes at the eleven panel sites",
 } as const;
 

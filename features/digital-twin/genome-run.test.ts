@@ -9,12 +9,19 @@ import type {
   StoredGenomeReport,
 } from "@/infrastructure/genome-report-store";
 import type { ArkAppRunInput, ArkAuditContext } from "@/packages/ark-adapter";
+import exportFixture from "@/packages/ark-adapter/fixtures/export-synthetic.json";
+import {
+  RSID_GENOTYPES_GRANTS,
+  RSID_GENOTYPES_REQUIRED,
+} from "@/packages/ark-adapter/rsid-genotypes";
+import { readGenomeRun } from "./genome-report-view";
 
 import {
   arkBuildOf,
   getGenomeReportResponse,
   type GenomeRunPorts,
   postGenomeRunResponse,
+  streamGenomeRunResponse,
 } from "./genome-run";
 
 const PRESENT = readFileSync(
@@ -54,6 +61,10 @@ const fakePorts = (
     wasmPath: () => "/repo/apps/ark/rsid-genotypes/build/rsid-genotypes.wasm",
     wasmExists: async () => true,
     sessionId: () => "session-1",
+    exportFhir: async () => ({
+      status: "outdated",
+      error: { code: "unknown", message: "unsupported" },
+    }),
     dataList: async (ctx) => {
       seen.contexts.push(ctx);
       return { status: "ok", data: listed("GRCh38") };
@@ -69,6 +80,7 @@ const fakePorts = (
       return {
         id: "report-1",
         app: "rsid-genotypes",
+        source: input.source,
         arkBuild: input.arkBuild,
         rows: input.rows,
         releasedAt: "2026-10-27T09:00:00.000Z",
@@ -84,6 +96,110 @@ const fakePorts = (
 };
 
 describe("POST /api/genome/run", () => {
+  test("exports first, needs no WASM and stores the Bundle with its own build", async () => {
+    const steps: string[] = [];
+    const { ports, seen } = fakePorts({
+      wasmExists: async () => {
+        throw new Error("export must not need WASM");
+      },
+      exportFhir: async (_ctx, input) => {
+        steps.push("export");
+        expect(input).toEqual({
+          paths: [RSID_GENOTYPES_REQUIRED],
+          optional: RSID_GENOTYPES_GRANTS,
+          timeout: 30,
+        });
+        return { status: "ok", data: exportFixture };
+      },
+      dataList: async () => {
+        steps.push("data-list");
+        return { status: "ok", data: listed("GRCh38") };
+      },
+    });
+    const body = await (await postGenomeRunResponse(ports)).json();
+    expect(steps).toEqual(["export", "data-list"]);
+    expect(seen.runs).toEqual([]);
+    expect(seen.saved[0]?.source).toBe("ark-export");
+    expect(seen.saved[0]?.arkBuild).toBe("GRCh38.p14");
+    expect(seen.saved[0]?.report).toBe(JSON.stringify(exportFixture.bundle));
+    expect(body.report.source).toBe("ark-export");
+    expect(seen.audits[0]?.args).toEqual({ source: "ark-export", grants: 11 });
+    expect(seen.audits[0]?.result).toEqual({
+      stored: true,
+      report_id: "report-1",
+      rows: 11,
+      calls: 11,
+      build_named: true,
+    });
+  });
+
+  test("a build disagreement refuses storage even with an assumption", async () => {
+    for (const build of ["GRCh37", "GRCh38.p13", "unknown"]) {
+      const { ports, seen } = fakePorts({
+        exportFhir: async () => ({ status: "ok", data: exportFixture }),
+        dataList: async () => ({ status: "ok", data: listed(build) }),
+        assumeBuild: () => "GRCh38",
+      });
+      expect((await (await postGenomeRunResponse(ports)).json()).code).toBe(
+        "BUILD_MISMATCH",
+      );
+      expect(seen.saved).toEqual([]);
+      expect(seen.runs).toEqual([]);
+      expect(seen.audits[0]?.result).toEqual({ stored: false });
+    }
+  });
+
+  test("only outdated falls back; all other failures keep their export outcome", async () => {
+    for (const status of [
+      "refused",
+      "awaiting_approval",
+      "undelivered",
+      "rejected",
+      "locked",
+      "unpaired",
+      "busy",
+      "error",
+    ] as const) {
+      const { ports, seen } = fakePorts({
+        exportFhir: async () => ({ status, error: { code: "test", message: "private" } }),
+      });
+      const body = await (await postGenomeRunResponse(ports)).json();
+      expect(body.code).toBe(status);
+      expect(seen.runs).toEqual([]);
+      expect(seen.saved).toEqual([]);
+      expect(seen.contexts).toEqual([]);
+      expect(JSON.stringify(body)).not.toContain("private");
+    }
+  });
+
+  test("streamed progress switches to both app steps before the fallback starts", async () => {
+    const sources: string[] = [];
+    const { ports, seen } = fakePorts();
+    const response = streamGenomeRunResponse(ports);
+    const body = await readGenomeRun(response, (source) => sources.push(source));
+    expect(sources).toEqual(["ark-export", "ark-app"]);
+    expect(body.ok).toBe(true);
+    expect(seen.saved[0]?.source).toBe("ark-app");
+    expect(seen.audits[0]?.args).toEqual({
+      source: "ark-app",
+      app: "rsid-genotypes",
+      grants: 11,
+    });
+    expect(seen.saved[0]?.report).toBe(PRESENT);
+  });
+
+  test("streamed exports have only one phone step", async () => {
+    const sources: string[] = [];
+    const { ports } = fakePorts({
+      exportFhir: async () => ({ status: "ok", data: exportFixture }),
+    });
+    const body = await readGenomeRun(streamGenomeRunResponse(ports), (source) =>
+      sources.push(source),
+    );
+    expect(sources).toEqual(["ark-export"]);
+    expect(body.ok).toBe(true);
+  });
+
   test("runs rsid-genotypes with the panel grants, stores and shows the report", async () => {
     const { ports, seen } = fakePorts();
     const response = await postGenomeRunResponse(ports);
@@ -137,7 +253,7 @@ describe("POST /api/genome/run", () => {
         sessionId: "session-1",
         subjectRef: null,
         tool: "genome.report.store",
-        args: { app: "rsid-genotypes", grants: 11 },
+        args: { source: "ark-app", app: "rsid-genotypes", grants: 11 },
         result: {
           stored: true,
           report_id: "report-1",

@@ -149,6 +149,37 @@ export const arkAppRunDocumentSchema = z.looseObject({
   duration_seconds: decimal,
 });
 
+/** The compact FHIR collection returned by `ark export --json`. */
+export const arkFhirBundleSchema = z.looseObject({
+  resourceType: z.literal("Bundle"),
+  type: z.literal("collection"),
+  entry: z
+    .array(
+      z.looseObject({
+        fullUrl: z.string(),
+        resource: z.looseObject({ resourceType: z.literal("Observation") }),
+      }),
+    )
+    .optional(),
+});
+
+/** A complete export; a failed task's partial document does not pass. */
+export const arkExportDocumentSchema = z.looseObject({
+  task: z.string().regex(/^\d+$/),
+  paths: z.array(z.string()),
+  media: z.literal("application/fhir+json; fhirVersion=4.0"),
+  bundle_bytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(16 * 1024 * 1024),
+  bundle: arkFhirBundleSchema,
+  duration_seconds: z.number().nonnegative(),
+});
+
+/** An approved export, kept out of audit arguments and results. */
+export type ArkExportDocument = z.infer<typeof arkExportDocumentSchema>;
+
 /** `ark doctor --json`: each check is ok, warn, fail or skip. */
 export const arkDoctorDocumentSchema = z.looseObject({
   version: z.string(),

@@ -2,11 +2,12 @@ import {
   panelEntry,
   RSID_GENOTYPES_FOOTER,
   type RsidGenotypeRow,
+  type GenomeReportSource,
 } from "@/packages/ark-adapter/rsid-genotypes";
 import { decideBuild } from "@/packages/genome-reference/build";
 
 /**
- * What the genome dashboard shows of a released report, and the fixed
+ * What the genome dashboard shows of approved panel data, and the fixed
  * sentences for every way a run can end. Pure: the routes build it and the
  * browser checks it. No Ark or provider text ever reaches a person.
  */
@@ -20,12 +21,13 @@ export type GenomeReportRowView = Readonly<{
   reference: string | null;
   /** Null is `no call` (or `not granted`), never a reference fill. */
   genotype: string | null;
-  /** False when the site's optional grant was not mounted: declined or not on the Ark. */
+  /** False when the site's optional grant was not approved or available. */
   granted: boolean;
 }>;
 
 export type GenomeReportView = Readonly<{
   id: string;
+  source?: GenomeReportSource | null;
   releasedAt: string;
   buildNote: string;
   footer: string;
@@ -63,6 +65,7 @@ export const buildNote = (
 export const toReportView = (
   report: Readonly<{
     id: string;
+    source?: GenomeReportSource | null;
     releasedAt: string;
     arkBuild: string | null;
     rows: readonly RsidGenotypeRow[];
@@ -70,6 +73,7 @@ export const toReportView = (
   assumeBuild: "GRCh38" | null,
 ): GenomeReportView => ({
   id: report.id,
+  source: report.source ?? "ark-app",
   releasedAt: report.releasedAt,
   buildNote: buildNote(report.arkBuild, assumeBuild),
   footer: RSID_GENOTYPES_FOOTER,
@@ -108,12 +112,35 @@ export const RUN_FAILURE_TEXT: Readonly<Record<string, string>> = {
   "not-permitted":
     "Genome runs need DATA_MODE=personal and GENOME_SOURCE=ark on this server.",
   "sign-in": "Sign in to run the Ark app.",
+  BUILD_MISMATCH:
+    "The export and reference data name different builds. Nothing was stored.",
+  BUILD_UNKNOWN: "The export names no supported build. Nothing was stored.",
 };
 
-export const runFailure = (code: string): GenomeRunFailure => ({
+/** Export wording has one approval and no report release. */
+const EXPORT_FAILURE_TEXT: Readonly<Record<string, string>> = {
+  refused: "You declined the export on your phone; nothing was stored.",
+  awaiting_approval:
+    "Nobody answered on your phone within 5 minutes; nothing was stored.",
+  rejected: "The Ark refused the export. Nothing was stored.",
+  outdated: "Update the ark CLI and the Ark firmware, then run again.",
+  error: "The Ark export did not finish. Run again.",
+  "report-unreadable":
+    "The Ark export did not match the panel's FHIR format. Nothing was stored.",
+  "sign-in": "Sign in to export the genome panel.",
+};
+
+export const runFailure = (
+  code: string,
+  source: GenomeReportSource = "ark-export",
+): GenomeRunFailure => ({
   ok: false,
   code,
-  message: RUN_FAILURE_TEXT[code] ?? RUN_FAILURE_TEXT.error ?? "",
+  message:
+    (source === "ark-export" ? EXPORT_FAILURE_TEXT[code] : undefined) ??
+    RUN_FAILURE_TEXT[code] ??
+    RUN_FAILURE_TEXT.error ??
+    "",
 });
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -147,3 +174,44 @@ export const isRunPayload = (value: unknown): value is GenomeRunPayload =>
     (value.ok === false &&
       typeof value.code === "string" &&
       typeof value.message === "string"));
+
+/** Updates the phone instructions as the server selects export or app fallback. */
+export const readGenomeRun = async (
+  response: Response,
+  onSource: (source: GenomeReportSource) => void,
+): Promise<GenomeRunPayload> => {
+  if (!response.headers.get("content-type")?.includes("application/x-ndjson")) {
+    const value: unknown = await response.json();
+    return isRunPayload(value) ? value : runFailure("error");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return runFailure("error");
+  const decoder = new TextDecoder();
+  let pending = "";
+  let result: GenomeRunPayload | undefined;
+  const accept = (line: string) => {
+    if (!line.trim()) return;
+    const value: unknown = JSON.parse(line);
+    if (isRunPayload(value)) result = value;
+    else if (
+      isRecord(value) &&
+      (value.source === "ark-export" || value.source === "ark-app")
+    )
+      onSource(value.source);
+    else throw new Error("invalid genome progress document");
+  };
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      pending += decoder.decode(chunk.value, { stream: !chunk.done });
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      lines.forEach(accept);
+      if (chunk.done) break;
+    }
+    accept(pending);
+    return result ?? runFailure("error");
+  } finally {
+    reader.releaseLock();
+  }
+};

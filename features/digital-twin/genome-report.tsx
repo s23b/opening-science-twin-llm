@@ -9,29 +9,31 @@ import {
 } from "@/infrastructure/format-measure";
 import { Button } from "@/infrastructure/ui-kit/button";
 import { StatusBadge } from "@/infrastructure/ui-kit/status-badge";
+import type { GenomeReportSource } from "@/packages/ark-adapter/rsid-genotypes";
 
 import {
   type GenomeReportView,
   isReportPayload,
-  isRunPayload,
+  readGenomeRun,
   runFailure,
 } from "./genome-report-view";
 import { GENOME_REPORT_COPY as COPY } from "./twin-page-copy";
 
 /**
- * The rsid-genotypes run on the genome dashboard. Run asks the server to
- * start the Ark app; `ark run` then blocks through two phone steps (approve
- * the run within 5 minutes, review and release the report within 10), and
- * the request cannot tell which one is open, so the wait shows both. The released
- * report is stored on this machine and shown as a table; a reload shows the
- * stored one without asking the Ark again.
+ * The approved panel is stored on this machine and shown as a table. The
+ * server signals an app fallback so its two phone steps replace the export's
+ * single step while waiting. A reload reads the stored result.
  */
 
 type Phase =
   | Readonly<{ kind: "loading" }>
   | Readonly<{ kind: "hidden" }>
   | Readonly<{ kind: "ready"; report: GenomeReportView | null; error: string | null }>
-  | Readonly<{ kind: "running"; report: GenomeReportView | null }>;
+  | Readonly<{
+      kind: "running";
+      report: GenomeReportView | null;
+      source?: GenomeReportSource;
+    }>;
 
 type GenomeReportProps = Readonly<{
   /** Tests and screenshots only: a fixed phase instead of the routes. */
@@ -91,17 +93,19 @@ const ReportTable = ({ report }: Readonly<{ report: GenomeReportView }>) => (
       </table>
     </div>
     <p className="text-muted-foreground mt-3 text-xs leading-relaxed">
-      {report.rows.some((row) => !row.granted) ? `${COPY.notGrantedNote} ` : ""}
+      {report.rows.some((row) => !row.granted)
+        ? `${report.source === "ark-export" ? COPY.exportNotGrantedNote : COPY.notGrantedNote} `
+        : ""}
       {report.buildNote}. Released {formatRelative(report.releasedAt)}. {report.footer}
     </p>
   </>
 );
 
-const Waiting = () => (
+const Waiting = ({ source }: Readonly<{ source: GenomeReportSource }>) => (
   <div role="status" className="border-border mt-4 rounded-lg border px-4 py-4">
     <StatusBadge tone="warn">{COPY.approveTitle}</StatusBadge>
     <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm leading-relaxed">
-      {COPY.steps.map((step) => (
+      {(source === "ark-export" ? COPY.exportSteps : COPY.steps).map((step) => (
         <li key={step.title}>
           <span className="font-medium">{step.title}.</span> {step.body}
         </li>
@@ -141,11 +145,17 @@ export const GenomeReport = ({ preview }: GenomeReportProps) => {
 
   const report = phase.report;
   const run = () => {
-    setPhase({ kind: "running", report });
-    void fetch("/api/genome/run", { method: "POST" })
-      .then((response) => response.json())
-      .then((value: unknown) => {
-        const payload = isRunPayload(value) ? value : runFailure("error");
+    setPhase({ kind: "running", report, source: "ark-export" });
+    void fetch("/api/genome/run", {
+      method: "POST",
+      headers: { Accept: "application/x-ndjson" },
+    })
+      .then((response) =>
+        readGenomeRun(response, (source) =>
+          setPhase({ kind: "running", report, source }),
+        ),
+      )
+      .then((payload) => {
         setPhase(
           payload.ok
             ? { kind: "ready", report: payload.report, error: null }
@@ -174,7 +184,9 @@ export const GenomeReport = ({ preview }: GenomeReportProps) => {
           {report === null ? COPY.run : COPY.runAgain}
         </Button>
       </div>
-      {phase.kind === "running" ? <Waiting /> : null}
+      {phase.kind === "running" ? (
+        <Waiting source={phase.source ?? "ark-export"} />
+      ) : null}
       {phase.kind === "ready" && phase.error !== null ? (
         <p role="alert" className="mt-4 text-sm leading-relaxed">
           {phase.error}

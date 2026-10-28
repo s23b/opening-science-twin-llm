@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
+import { readCatalog } from "@/scripts/genome-synth/read-catalog";
 
 import {
   genotypeAlleles,
@@ -17,6 +18,12 @@ const golden = (name: string): string =>
   readFileSync(join(APP_DIR, "goldens", name), "utf8");
 
 describe("rsid-genotypes panel", () => {
+  test("public GRCh38 coordinates agree with the synthetic catalog's panel", async () => {
+    const catalog = (await readCatalog()).filter((entry) => entry.category === "panel");
+    expect(
+      RSID_PANEL.map(({ rsid, chrom, pos, ref }) => ({ rsid, chrom, pos, ref })),
+    ).toEqual(catalog.map(({ rsid, chrom, pos, ref }) => ({ rsid, chrom, pos, ref })));
+  });
   test("matches the Rust app's panel, in report order", () => {
     const lib = readFileSync(join(APP_DIR, "src/lib.rs"), "utf8");
     const rustPanel = [...lib.matchAll(/rsid: "(rs\d+)",\s*gene: "([A-Z0-9]+)"/g)].map(
